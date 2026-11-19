@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test, TestContext } from 'node:test'
-import { Bluesky } from './bsky'
+import { Bluesky, Like } from './bsky'
 
 /**
  * Explicitly handles the promise returned by node:test registration and rethrows test failures as-is.
@@ -169,3 +169,170 @@ registerTest('retries a 429 response honoring Retry-After', async (t) => {
   assert.deepEqual(result, { records: [], cursor: '' })
   assert.equal(calls, 2)
 })
+
+function likeOf(id: string): Like {
+  return {
+    uri: `at://did:plc:me/app.bsky.feed.like/${id}`,
+    cid: `like-cid-${id}`,
+    value: {
+      $type: 'app.bsky.feed.like',
+      subject: {
+        cid: `cid-${id}`,
+        uri: `at://did:plc:abc/app.bsky.feed.post/${id}`,
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+  }
+}
+
+function subjectIds(likes: Like[]): string[] {
+  return likes.map((l) => l.value.subject.uri.split('/').pop() ?? '')
+}
+
+/**
+ * Mocks fetch with pages keyed by the request's cursor query value ('' for none).
+ * Returns the cursors requested, in order.
+ */
+function mockPages(t: TestContext, pages: Record<string, Response>): string[] {
+  const requested: string[] = []
+  t.mock.method(globalThis, 'fetch', (href: string) => {
+    const cursor = new URL(href).searchParams.get('cursor') ?? ''
+    requested.push(cursor)
+    const page = pages[cursor] as Response | undefined
+    return page
+      ? Promise.resolve(page)
+      : Promise.reject(new TypeError(`unexpected cursor "${cursor}"`))
+  })
+  return requested
+}
+
+registerTest('getUserLikes omits cursor unless one is given', async (t) => {
+  const urls: string[] = []
+  t.mock.method(globalThis, 'fetch', (href: string) => {
+    urls.push(href)
+    return Promise.resolve(okLikesResponse())
+  })
+
+  await Bluesky.getUserLikes('did:plc:example')
+  await Bluesky.getUserLikes('did:plc:example', 'c1')
+  assert.equal(new URL(urls[0]).searchParams.has('cursor'), false)
+  assert.equal(new URL(urls[1]).searchParams.get('cursor'), 'c1')
+})
+
+registerTest(
+  'getLikesUntilKnown stops at the page with a known like',
+  async (t) => {
+    const requested = mockPages(t, {
+      '': Response.json({ records: [likeOf('5'), likeOf('4')], cursor: 'c1' }),
+      c1: Response.json({
+        records: [likeOf('3'), likeOf('2'), likeOf('1')],
+        cursor: 'c2',
+      }),
+    })
+
+    const likes = await Bluesky.getLikesUntilKnown(
+      'did:plc:example',
+      (like) => like.value.subject.cid === 'cid-2'
+    )
+    assert.deepEqual(requested, ['', 'c1'])
+    assert.deepEqual(subjectIds(likes), ['5', '4', '3', '2', '1'])
+  }
+)
+
+registerTest(
+  'getLikesUntilKnown walks to the last page when nothing is known',
+  async (t) => {
+    const requested = mockPages(t, {
+      '': Response.json({ records: [likeOf('3')], cursor: 'c1' }),
+      c1: Response.json({ records: [likeOf('2')], cursor: 'c2' }),
+      c2: Response.json({ records: [likeOf('1')] }),
+    })
+
+    const likes = await Bluesky.getLikesUntilKnown(
+      'did:plc:example',
+      () => false
+    )
+    assert.deepEqual(requested, ['', 'c1', 'c2'])
+    assert.deepEqual(subjectIds(likes), ['3', '2', '1'])
+  }
+)
+
+registerTest(
+  'getLikesUntilKnown fetches one page when everything is known',
+  async (t) => {
+    const requested = mockPages(t, {
+      '': Response.json({ records: [likeOf('2'), likeOf('1')], cursor: 'c1' }),
+    })
+
+    const likes = await Bluesky.getLikesUntilKnown(
+      'did:plc:example',
+      () => true
+    )
+    assert.deepEqual(requested, [''])
+    assert.deepEqual(subjectIds(likes), ['2', '1'])
+  }
+)
+
+registerTest(
+  'getLikesUntilKnown returns a repeated subject once',
+  async (t) => {
+    mockPages(t, {
+      '': Response.json({ records: [likeOf('2'), likeOf('1')], cursor: 'c1' }),
+      c1: Response.json({ records: [likeOf('1'), likeOf('0')] }),
+    })
+
+    const likes = await Bluesky.getLikesUntilKnown(
+      'did:plc:example',
+      () => false
+    )
+    assert.deepEqual(subjectIds(likes), ['2', '1', '0'])
+  }
+)
+
+registerTest(
+  'getLikesUntilKnown stops when the cursor does not advance',
+  async (t) => {
+    const requested = mockPages(t, {
+      '': Response.json({ records: [likeOf('2')], cursor: 'c1' }),
+      c1: Response.json({ records: [likeOf('1')], cursor: 'c1' }),
+    })
+
+    const likes = await Bluesky.getLikesUntilKnown(
+      'did:plc:example',
+      () => false
+    )
+    assert.deepEqual(requested, ['', 'c1'])
+    assert.deepEqual(subjectIds(likes), ['2', '1'])
+  }
+)
+
+registerTest(
+  'getLikesUntilKnown stops on an empty page that carries a cursor',
+  async (t) => {
+    const requested = mockPages(t, {
+      '': Response.json({ records: [], cursor: 'c1' }),
+    })
+
+    const likes = await Bluesky.getLikesUntilKnown(
+      'did:plc:example',
+      () => false
+    )
+    assert.deepEqual(requested, [''])
+    assert.deepEqual(likes, [])
+  }
+)
+
+registerTest(
+  'getLikesUntilKnown rejects without partial results when a later page fails',
+  async (t) => {
+    mockPages(t, {
+      '': Response.json({ records: [likeOf('2')], cursor: 'c1' }),
+      c1: new Response('not found', { status: 404, statusText: 'Not Found' }),
+    })
+
+    await assert.rejects(
+      Bluesky.getLikesUntilKnown('did:plc:example', () => false),
+      /returned 404/
+    )
+  }
+)

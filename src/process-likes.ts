@@ -9,6 +9,19 @@ export interface MessageSender {
 }
 
 /**
+ * Drops likes for which `isKnown` is true and returns the rest oldest first.
+ * Oldest-first processing keeps the notified set a prefix in time order, which is what lets pagination stop at the first known like.
+ *
+ * @param likes Likes ordered newest first; not mutated
+ */
+export function selectUnnotifiedOldestFirst(
+  likes: Like[],
+  isKnown: (like: Like) => boolean
+): Like[] {
+  return likes.filter((like) => !isKnown(like)).toReversed()
+}
+
+/**
  * Processes liked posts in order and notifies Discord about image posts.
  * An image post is recorded as notified only after the send succeeds, so a post whose send failed is retried on the next run.
  *

@@ -1,8 +1,8 @@
 import { Notified } from './notified'
 import { Configuration } from './config'
 import { Discord, Logger } from '@book000/node-utils'
-import { Bluesky } from './bsky'
-import { processLikes } from './process-likes'
+import { Bluesky, Like } from './bsky'
+import { processLikes, selectUnnotifiedOldestFirst } from './process-likes'
 
 async function main() {
   const logger = Logger.configure('main')
@@ -21,11 +21,14 @@ async function main() {
 
   const isFirst = Notified.isFirst()
 
-  const results = await Bluesky.getUserLikes('hiratake.dev')
-  const filteredResults = results.records.filter((record) => {
-    const { uri } = record.value.subject
-    return !Notified.isNotified(uri)
-  })
+  const isNotified = (like: Like) => Notified.isNotified(like.value.subject.uri)
+
+  // On the first run only the newest page is fetched as the baseline
+  const likes = await Bluesky.getLikesUntilKnown(
+    'hiratake.dev',
+    isFirst ? () => true : isNotified
+  )
+  const filteredResults = selectUnnotifiedOldestFirst(likes, isNotified)
 
   const postDetails = await Bluesky.getPosts(
     filteredResults.map((r) => r.value.subject.uri)

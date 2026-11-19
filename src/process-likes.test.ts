@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test, TestContext } from 'node:test'
 import { Like, Post } from './bsky'
 import { Notified } from './notified'
-import { processLikes } from './process-likes'
+import { processLikes, selectUnnotifiedOldestFirst } from './process-likes'
 
 const POST_URI = 'at://did:plc:abc/app.bsky.feed.post/xyz'
 const POST_URL = 'https://bsky.app/profile/did:plc:abc/post/xyz'
@@ -123,5 +123,56 @@ registerTest(
     )
 
     assert.deepEqual(calls, [`add:${POST_URI}`])
+  }
+)
+
+function likeWithSubject(id: string): Like {
+  const base = like()
+  return {
+    ...base,
+    value: {
+      ...base.value,
+      subject: {
+        cid: `cid-${id}`,
+        uri: `at://did:plc:abc/app.bsky.feed.post/${id}`,
+      },
+    },
+  }
+}
+
+function ids(likes: Like[]): string[] {
+  return likes.map((l) => l.value.subject.cid)
+}
+
+registerTest(
+  'selectUnnotifiedOldestFirst drops known likes and reverses',
+  async () => {
+    const input = [
+      likeWithSubject('4'),
+      likeWithSubject('3'),
+      likeWithSubject('2'),
+      likeWithSubject('1'),
+    ]
+    const before = ids(input)
+
+    const result = selectUnnotifiedOldestFirst(
+      input,
+      (l) => l.value.subject.cid === 'cid-2' || l.value.subject.cid === 'cid-1'
+    )
+
+    assert.deepEqual(ids(result), ['cid-3', 'cid-4'])
+    assert.deepEqual(ids(input), before)
+    await Promise.resolve()
+  }
+)
+
+registerTest(
+  'selectUnnotifiedOldestFirst returns an empty array for empty input',
+  async () => {
+    assert.deepEqual(
+      selectUnnotifiedOldestFirst([], () => false),
+      []
+    )
+    await Promise.resolve()
   }
 )

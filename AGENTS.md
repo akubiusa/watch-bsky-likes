@@ -13,8 +13,8 @@ Single source of project guidance for AI coding agents and contributors. `CLAUDE
 
 A TypeScript / Node.js tool that watches the likes of a Bluesky user and notifies Discord (webhook or bot) about liked posts that contain images.
 
-- `src/main.ts`: entry point. Loads the config, fetches likes, filters out already-notified ones, then calls `processLikes`. The watched user (`hiratake.dev`) is hardcoded here.
-- `src/bsky.ts`: Bluesky API client (`getUserLikes`, `getPosts`), post cache, and `fetchExternal` (bounded retry with backoff + jitter for transient network errors and 429 / 5xx).
+- `src/main.ts`: entry point. Loads the config, fetches likes page by page until it reaches an already-notified one (only the first page on the first run), drops notified ones, then calls `processLikes` oldest first. The watched user (`hiratake.dev`) is hardcoded here.
+- `src/bsky.ts`: Bluesky API client (`getUserLikes`, `getLikesUntilKnown` which follows the `listRecords` cursor, `getPosts`), post cache, and `fetchExternal` (bounded retry with backoff + jitter for transient network errors and 429 / 5xx).
 - `src/process-likes.ts`: notification loop. An image post is recorded as notified only after the Discord send succeeds. On the first run (no `data/notified.json`) posts are only recorded, not sent.
 - `src/notified.ts`: persists notified post URIs to `data/notified.json` (override with `NOTIFIED_FILE`).
 - `src/config.ts`: `Configuration` (`ConfigFramework`) and its validation; the `IConfiguration` interface is the config schema.

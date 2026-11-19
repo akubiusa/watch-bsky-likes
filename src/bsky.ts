@@ -15,7 +15,7 @@ export interface Like {
 
 interface LikeResponse {
   records: Like[]
-  cursor: string
+  cursor?: string
 }
 
 interface ImagesEmbed {
@@ -329,18 +329,69 @@ async function fetchExternal(operation: string, url: URL): Promise<Response> {
 }
 
 export class Bluesky {
-  public static async getUserLikes(actor: string): Promise<LikeResponse> {
+  public static async getUserLikes(
+    actor: string,
+    cursor?: string
+  ): Promise<LikeResponse> {
     const baseUrl = 'https://bsky.social/xrpc/com.atproto.repo.listRecords'
     const url = new URL(baseUrl)
-    url.search = new URLSearchParams({
+    const params = new URLSearchParams({
       collection: 'app.bsky.feed.like',
       limit: '100',
       reverse: 'false',
-      cursor: '',
       repo: actor,
-    }).toString()
+    })
+    if (cursor) {
+      params.set('cursor', cursor)
+    }
+    url.search = params.toString()
     const res = await fetchExternal('getUserLikes', url)
     return (await res.json()) as LikeResponse
+  }
+
+  /**
+   * Fetches likes newest first, following the cursor until a page contains a like for which `isKnown` is true,
+   * the page is empty, or there is no further page.
+   * The page that contains a known like is included in full, so the caller must filter known likes itself.
+   * Each subject URI appears once, at its newest occurrence.
+   * If any page fails, the error propagates and no partial result is returned.
+   */
+  public static async getLikesUntilKnown(
+    actor: string,
+    isKnown: (like: Like) => boolean
+  ): Promise<Like[]> {
+    const likes: Like[] = []
+    const seen = new Set<string>()
+    let cursor: string | undefined
+    let pages = 0
+
+    for (;;) {
+      const page = await Bluesky.getUserLikes(actor, cursor)
+      pages++
+
+      for (const like of page.records) {
+        const { uri } = like.value.subject
+        if (seen.has(uri)) continue
+        seen.add(uri)
+        likes.push(like)
+      }
+
+      const reachedKnown = page.records.some((like) => isKnown(like))
+      if (
+        reachedKnown ||
+        page.records.length === 0 ||
+        !page.cursor ||
+        page.cursor === cursor
+      ) {
+        break
+      }
+      cursor = page.cursor
+    }
+
+    if (pages > 1) {
+      console.log(`Fetched ${pages} pages of likes (${likes.length} records)`)
+    }
+    return likes
   }
 
   public static async getPosts(uris: string[], useCache = true) {
