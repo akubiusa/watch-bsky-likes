@@ -25,6 +25,11 @@ export async function processLikes(
   isFirst: boolean,
   unresolvedUris: ReadonlySet<string> = new Set()
 ): Promise<void> {
+  if (isFirst) {
+    Notified.saveBaseline(records.map((record) => record.value.subject.uri))
+    return
+  }
+
   for (const record of records) {
     const { uri } = record.value.subject
     const createdAt = record.value.createdAt
@@ -48,11 +53,6 @@ export async function processLikes(
 
     if (!Bluesky.isImagePost(postDetail)) {
       console.log(`  -> Skip because postDetail is not an image post`)
-      Notified.addNotified(uri)
-      continue
-    }
-
-    if (isFirst) {
       Notified.addNotified(uri)
       continue
     }
